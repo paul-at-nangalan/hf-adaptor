@@ -17,6 +17,7 @@ type Role string
 const (
 	ROLE_SYSTEM Role = "system"
 	ROLE_USER   Role = "user"
+	ROLE_AGENT  Role = "assistant"
 )
 
 type Message struct {
@@ -45,7 +46,8 @@ type Adaptor struct {
 *  will be used
 * model should be the model type (which can be found somewhere on HF), e.g. tgi for text generation type models
  */
-func NewAdaptor(apiurl, apikey, model string, baseinstructions string, extractresp ExtractResponse, maxretries int) *Adaptor {
+func NewAdaptor(apiurl, apikey, model string, baseinstructions string,
+	extractresp ExtractResponse, maxretries int) *Adaptor {
 
 	ad := &Adaptor{
 		apiURL:       apiurl,
@@ -104,15 +106,21 @@ func (c *Adaptor) sendWithRetry(reqData any) (*http.Response, error) {
 	return nil, fmt.Errorf("Num retries exceeded")
 }
 
-func (c *Adaptor) sendRequest(message string) (string, error) {
-	messages := []Message{
-		{
-			Role: string(ROLE_SYSTEM), Content: html.UnescapeString(c.baseinstruct),
-		},
-		{
-			Role: string(ROLE_USER), Content: html.UnescapeString(message),
-		},
-	}
+func (c *Adaptor) SendRequest(message string) (string, error) {
+	return c.SendRequestWithHistory(message, []Message{})
+}
+
+func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (string, error) {
+
+	messages := make([]Message, 0, len(history)+2)
+
+	messages = append(messages, Message{
+		Role: string(ROLE_SYSTEM), Content: html.UnescapeString(c.baseinstruct),
+	})
+	messages = append(messages, history...)
+	messages = append(messages, Message{
+		Role: string(ROLE_USER), Content: html.UnescapeString(message),
+	})
 	reqData := AIRequest{
 		Model:    c.model,
 		Messages: messages,
@@ -126,10 +134,6 @@ func (c *Adaptor) sendRequest(message string) (string, error) {
 	defer resp.Body.Close()
 
 	return c.extractresp(resp.Body)
-}
-
-func (c *Adaptor) SendRequest(message string) (string, error) {
-	return c.sendRequest(message)
 }
 
 type Response struct {
