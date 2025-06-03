@@ -91,11 +91,14 @@ func NewTool(name string, description string, params []ToolParameter) Tool {
 	return tool
 }
 
-// arguments={'format': 'celsius', 'location': 'San Francisco, CA', 'num_days': 3}, name='get_n_day_weather_forecast', description=None
 type FunctionCall struct {
-	Arguments   map[string]any `json:"arguments,omitempty"` // Optional, as per user's example
-	Name        string         `json:"name"`
-	Description string         `json:"description"` // This is a JSON string
+	Id       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Description interface{} `json:"description"`
+		Name        string      `json:"name"`
+		Arguments   string      `json:"arguments"`
+	} `json:"function"`
 }
 
 type ExtractResponse func(closer io.ReadCloser) (string, []FunctionCall, error)
@@ -218,9 +221,9 @@ type Response struct {
 	Choices           []struct {
 		Index   int `json:"index"`
 		Message struct {
-			Role     string         `json:"role"`
-			Content  string         `json:"content"`
-			ToolCall []FunctionCall `json:"tool_call,omitempty"`
+			Role      string         `json:"role"`
+			Content   string         `json:"content"`
+			ToolCalls []FunctionCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		Logprobs     interface{} `json:"logprobs"`
 		FinishReason string      `json:"finish_reason"`
@@ -232,9 +235,25 @@ type Response struct {
 	} `json:"usage"`
 }
 
+type DebugDecoder struct {
+	reader io.ReadCloser
+}
+
+func (d *DebugDecoder) Read(p []byte) (n int, err error) {
+	n, err = d.reader.Read(p)
+	fmt.Println(string(p))
+	return n, err
+}
+
+func (d *DebugDecoder) Close() error {
+	return d.reader.Close()
+}
+
 // // Extract the content field from the first message _only_
 func OpenAIJsonExtractor(reader io.ReadCloser) (string, []FunctionCall, error) {
-	dec := json.NewDecoder(reader)
+	dbgdec := &DebugDecoder{reader: reader}
+
+	dec := json.NewDecoder(dbgdec)
 	resp := Response{} // Ensure your Response struct is defined to expect FunctionCall within Message
 	err := dec.Decode(&resp)
 	if err != nil {
@@ -242,8 +261,8 @@ func OpenAIJsonExtractor(reader io.ReadCloser) (string, []FunctionCall, error) {
 	}
 	if len(resp.Choices) > 0 {
 		// Check for function call
-		if resp.Choices[0].Message.ToolCall != nil {
-			return resp.Choices[0].Message.Content, resp.Choices[0].Message.ToolCall, nil
+		if resp.Choices[0].Message.ToolCalls != nil {
+			return resp.Choices[0].Message.Content, resp.Choices[0].Message.ToolCalls, nil
 		}
 		// No function call, return content
 		return resp.Choices[0].Message.Content, nil, nil
