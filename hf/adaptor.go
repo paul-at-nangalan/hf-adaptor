@@ -57,7 +57,7 @@ type Tool struct {
 }
 
 type FunctionCall struct {
-	ID        string `json:"id,omitempty"` // Optional, as per user's example
+	ID        string `json:"id,omitempty"`      // Optional, as per user's example
 	CallID    string `json:"call_id,omitempty"` // Optional, as per user's example
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"` // This is a JSON string
@@ -153,11 +153,11 @@ func (c *Adaptor) sendWithRetry(reqData any) (*http.Response, error) {
 }
 
 func (c *Adaptor) SendRequest(message string) (string, error) {
-	content, _, err := c.SendRequestWithHistory(message, []Message{}, nil)
+	content, _, err := c.SendRequestWithHistory(message, []Message{})
 	return content, err
 }
 
-func (c *Adaptor) SendRequestWithHistory(message string, history []Message, hiddenParameters map[string]any) (string, *FunctionCall, error) {
+func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (string, *FunctionCall, error) {
 
 	messages := make([]Message, 0, len(history)+2)
 
