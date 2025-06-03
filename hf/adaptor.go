@@ -91,14 +91,14 @@ func NewTool(name string, description string, params []ToolParameter) Tool {
 	return tool
 }
 
+// arguments={'format': 'celsius', 'location': 'San Francisco, CA', 'num_days': 3}, name='get_n_day_weather_forecast', description=None
 type FunctionCall struct {
-	ID        string `json:"id,omitempty"`      // Optional, as per user's example
-	CallID    string `json:"call_id,omitempty"` // Optional, as per user's example
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // This is a JSON string
+	Arguments   map[string]any `json:"arguments,omitempty"` // Optional, as per user's example
+	Name        string         `json:"name"`
+	Description string         `json:"description"` // This is a JSON string
 }
 
-type ExtractResponse func(closer io.ReadCloser) (string, *FunctionCall, error)
+type ExtractResponse func(closer io.ReadCloser) (string, []FunctionCall, error)
 type Adaptor struct {
 	apiURL       string
 	apiKey       string
@@ -179,7 +179,7 @@ func (c *Adaptor) SendRequest(message string) (string, error) {
 	return content, err
 }
 
-func (c *Adaptor) SendRequestWithHistory(message string, history []Message, tools []Tool) (string, *FunctionCall, error) {
+func (c *Adaptor) SendRequestWithHistory(message string, history []Message, tools []Tool) (string, []FunctionCall, error) {
 
 	messages := make([]Message, 0, len(history)+2)
 
@@ -218,9 +218,9 @@ type Response struct {
 	Choices           []struct {
 		Index   int `json:"index"`
 		Message struct {
-			Role         string        `json:"role"`
-			Content      string        `json:"content"`
-			FunctionCall *FunctionCall `json:"function_call,omitempty"`
+			Role     string         `json:"role"`
+			Content  string         `json:"content"`
+			ToolCall []FunctionCall `json:"tool_call,omitempty"`
 		} `json:"message"`
 		Logprobs     interface{} `json:"logprobs"`
 		FinishReason string      `json:"finish_reason"`
@@ -233,7 +233,7 @@ type Response struct {
 }
 
 // // Extract the content field from the first message _only_
-func OpenAIJsonExtractor(reader io.ReadCloser) (string, *FunctionCall, error) {
+func OpenAIJsonExtractor(reader io.ReadCloser) (string, []FunctionCall, error) {
 	dec := json.NewDecoder(reader)
 	resp := Response{} // Ensure your Response struct is defined to expect FunctionCall within Message
 	err := dec.Decode(&resp)
@@ -242,8 +242,8 @@ func OpenAIJsonExtractor(reader io.ReadCloser) (string, *FunctionCall, error) {
 	}
 	if len(resp.Choices) > 0 {
 		// Check for function call
-		if resp.Choices[0].Message.FunctionCall != nil {
-			return resp.Choices[0].Message.Content, resp.Choices[0].Message.FunctionCall, nil
+		if resp.Choices[0].Message.ToolCall != nil {
+			return resp.Choices[0].Message.Content, resp.Choices[0].Message.ToolCall, nil
 		}
 		// No function call, return content
 		return resp.Choices[0].Message.Content, nil, nil
@@ -252,7 +252,7 @@ func OpenAIJsonExtractor(reader io.ReadCloser) (string, *FunctionCall, error) {
 	return "", nil, fmt.Errorf("no choices found in response") // Or handle as appropriate
 }
 
-func (c *Adaptor) RawExtracter(reader io.ReadCloser) (string, *FunctionCall, error) {
+func (c *Adaptor) RawExtracter(reader io.ReadCloser) (string, []FunctionCall, error) {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return "", nil, err
