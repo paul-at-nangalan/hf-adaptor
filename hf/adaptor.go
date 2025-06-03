@@ -21,24 +21,61 @@ const (
 )
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role         string        `json:"role"`
+	Content      string        `json:"content"` // Can be null if FunctionCall is present
+	FunctionCall *FunctionCall `json:"function_call,omitempty"`
 }
 
 type AIRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
+	Tools    []Tool    `json:"tools,omitempty"`
 }
 
-type ExtractResponse func(closer io.ReadCloser) (string, error)
+type ToolFunctionParameterProperties struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+}
+
+type ToolFunctionParameters struct {
+	Type                 string                                     `json:"type"` // Should be "object"
+	Properties           map[string]ToolFunctionParameterProperties `json:"properties"`
+	Required             []string                                   `json:"required,omitempty"`
+	AdditionalProperties bool                                       `json:"additionalProperties"`
+}
+
+type ToolFunction struct {
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Parameters  *ToolFunctionParameters `json:"parameters"`
+}
+
+type Tool struct {
+	Type     string       `json:"type"` // Should be "function"
+	Function ToolFunction `json:"function"`
+}
+
+type FunctionCall struct {
+	ID        string `json:"id,omitempty"` // Optional, as per user's example
+	CallID    string `json:"call_id,omitempty"` // Optional, as per user's example
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // This is a JSON string
+}
+
+type RegisteredFunction func(params map[string]any, hiddenParams map[string]any) (string, error)
+
+type ExtractResponse func(closer io.ReadCloser) (string, *FunctionCall, error)
 type Adaptor struct {
-	apiURL       string
-	apiKey       string
-	model        string
-	baseinstruct string
-	client       *http.Client
-	extractresp  ExtractResponse
-	maxretries   int
+	apiURL              string
+	apiKey              string
+	model               string
+	baseinstruct        string
+	client              *http.Client
+	extractresp         ExtractResponse
+	maxretries          int
+	registeredFunctions map[string]RegisteredFunction // New field
+	tools               []Tool                        // New field
 }
 
 /*
@@ -47,16 +84,25 @@ type Adaptor struct {
 * model should be the model type (which can be found somewhere on HF), e.g. tgi for text generation type models
  */
 func NewAdaptor(apiurl, apikey, model string, baseinstructions string,
-	extractresp ExtractResponse, maxretries int) *Adaptor {
+	extractresp ExtractResponse, maxretries int,
+	userFunctions map[string]RegisteredFunction, userTools []Tool) *Adaptor {
 
 	ad := &Adaptor{
-		apiURL:       apiurl,
-		apiKey:       apikey,
-		client:       &http.Client{},
-		extractresp:  extractresp,
-		model:        model,
-		baseinstruct: baseinstructions,
-		maxretries:   maxretries,
+		apiURL:              apiurl,
+		apiKey:              apikey,
+		client:              &http.Client{},
+		extractresp:         extractresp,
+		model:               model,
+		baseinstruct:        baseinstructions,
+		maxretries:          maxretries,
+		registeredFunctions: make(map[string]RegisteredFunction), // Initialize map
+		tools:               make([]Tool, 0),                     // Initialize slice
+	}
+	if userFunctions != nil {
+		ad.registeredFunctions = userFunctions
+	}
+	if userTools != nil {
+		ad.tools = userTools
 	}
 	if extractresp == nil {
 		ad.extractresp = ad.RawExtracter
@@ -107,10 +153,11 @@ func (c *Adaptor) sendWithRetry(reqData any) (*http.Response, error) {
 }
 
 func (c *Adaptor) SendRequest(message string) (string, error) {
-	return c.SendRequestWithHistory(message, []Message{})
+	content, _, err := c.SendRequestWithHistory(message, []Message{}, nil)
+	return content, err
 }
 
-func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (string, error) {
+func (c *Adaptor) SendRequestWithHistory(message string, history []Message, hiddenParameters map[string]any) (string, *FunctionCall, error) {
 
 	messages := make([]Message, 0, len(history)+2)
 
@@ -125,6 +172,9 @@ func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (str
 		Model:    c.model,
 		Messages: messages,
 	}
+	if len(c.tools) > 0 {
+		reqData.Tools = c.tools
+	}
 
 	resp, err := c.sendWithRetry(reqData)
 	handlers.PanicOnError(err)
@@ -133,7 +183,8 @@ func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (str
 	}
 	defer resp.Body.Close()
 
-	return c.extractresp(resp.Body)
+	content, functionCall, err := c.extractresp(resp.Body)
+	return content, functionCall, err
 }
 
 type Response struct {
@@ -145,8 +196,9 @@ type Response struct {
 	Choices           []struct {
 		Index   int `json:"index"`
 		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role         string        `json:"role"`
+			Content      string        `json:"content"`
+			FunctionCall *FunctionCall `json:"function_call,omitempty"`
 		} `json:"message"`
 		Logprobs     interface{} `json:"logprobs"`
 		FinishReason string      `json:"finish_reason"`
@@ -159,24 +211,31 @@ type Response struct {
 }
 
 // // Extract the content field from the first message _only_
-func OpenAIJsonExtractor(reader io.ReadCloser) (string, error) {
+func OpenAIJsonExtractor(reader io.ReadCloser) (string, *FunctionCall, error) {
 	dec := json.NewDecoder(reader)
-	resp := Response{}
+	resp := Response{} // Ensure your Response struct is defined to expect FunctionCall within Message
 	err := dec.Decode(&resp)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if len(resp.Choices) > 0 {
-		return resp.Choices[0].Message.Content, nil
+		// Check for function call
+		if resp.Choices[0].Message.FunctionCall != nil {
+			return resp.Choices[0].Message.Content, resp.Choices[0].Message.FunctionCall, nil
+		}
+		// No function call, return content
+		return resp.Choices[0].Message.Content, nil, nil
 	}
-	return "", nil
+	// No choices or unexpected response
+	return "", nil, fmt.Errorf("no choices found in response") // Or handle as appropriate
 }
 
-func (c *Adaptor) RawExtracter(reader io.ReadCloser) (string, error) {
+func (c *Adaptor) RawExtracter(reader io.ReadCloser) (string, *FunctionCall, error) {
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	fmt.Println("Resp: ", string(data))
-	return string(data), nil
+	// RawExtracter does not parse function calls, so it returns nil for FunctionCall
+	return string(data), nil, nil
 }
