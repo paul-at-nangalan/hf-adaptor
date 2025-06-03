@@ -33,9 +33,8 @@ type AIRequest struct {
 }
 
 type ToolFunctionParameterProperties struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
 }
 
 type ToolFunctionParameters struct {
@@ -45,15 +44,51 @@ type ToolFunctionParameters struct {
 	AdditionalProperties bool                                       `json:"additionalProperties"`
 }
 
-type ToolFunction struct {
+type Function struct {
 	Name        string                  `json:"name"`
 	Description string                  `json:"description,omitempty"`
 	Parameters  *ToolFunctionParameters `json:"parameters"`
 }
-
 type Tool struct {
-	Type     string       `json:"type"` // Should be "function"
-	Function ToolFunction `json:"function"`
+	Type     string   `json:"type"` // Should be "function"
+	Function Function `json:"function"`
+}
+
+type ToolParameter struct {
+	Name        string
+	Type        string /// string, int ....
+	Description string
+	Required    bool
+}
+
+func NewTool(name string, description string, params []ToolParameter) Tool {
+	tool := Tool{
+		Type: "function",
+	}
+	function := Function{
+		Name:        name,
+		Description: description,
+	}
+	if len(params) > 0 {
+		function.Parameters = &ToolFunctionParameters{
+			Type:       "object",
+			Properties: make(map[string]ToolFunctionParameterProperties),
+		}
+		required := make([]string, 0)
+		for _, property := range params {
+			function.Parameters.Properties[property.Name] = ToolFunctionParameterProperties{
+				Type:        property.Type,
+				Description: property.Description,
+			}
+			if property.Required {
+				required = append(required, property.Name)
+			}
+		}
+		function.Parameters.Required = required
+		function.Parameters.AdditionalProperties = false
+	}
+	tool.Function = function
+	return tool
 }
 
 type FunctionCall struct {
@@ -63,19 +98,15 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"` // This is a JSON string
 }
 
-type RegisteredFunction func(params map[string]any, hiddenParams map[string]any) (string, error)
-
 type ExtractResponse func(closer io.ReadCloser) (string, *FunctionCall, error)
 type Adaptor struct {
-	apiURL              string
-	apiKey              string
-	model               string
-	baseinstruct        string
-	client              *http.Client
-	extractresp         ExtractResponse
-	maxretries          int
-	registeredFunctions map[string]RegisteredFunction // New field
-	tools               []Tool                        // New field
+	apiURL       string
+	apiKey       string
+	model        string
+	baseinstruct string
+	client       *http.Client
+	extractresp  ExtractResponse
+	maxretries   int
 }
 
 /*
@@ -84,25 +115,16 @@ type Adaptor struct {
 * model should be the model type (which can be found somewhere on HF), e.g. tgi for text generation type models
  */
 func NewAdaptor(apiurl, apikey, model string, baseinstructions string,
-	extractresp ExtractResponse, maxretries int,
-	userFunctions map[string]RegisteredFunction, userTools []Tool) *Adaptor {
+	extractresp ExtractResponse, maxretries int) *Adaptor {
 
 	ad := &Adaptor{
-		apiURL:              apiurl,
-		apiKey:              apikey,
-		client:              &http.Client{},
-		extractresp:         extractresp,
-		model:               model,
-		baseinstruct:        baseinstructions,
-		maxretries:          maxretries,
-		registeredFunctions: make(map[string]RegisteredFunction), // Initialize map
-		tools:               make([]Tool, 0),                     // Initialize slice
-	}
-	if userFunctions != nil {
-		ad.registeredFunctions = userFunctions
-	}
-	if userTools != nil {
-		ad.tools = userTools
+		apiURL:       apiurl,
+		apiKey:       apikey,
+		client:       &http.Client{},
+		extractresp:  extractresp,
+		model:        model,
+		baseinstruct: baseinstructions,
+		maxretries:   maxretries,
 	}
 	if extractresp == nil {
 		ad.extractresp = ad.RawExtracter
@@ -153,11 +175,11 @@ func (c *Adaptor) sendWithRetry(reqData any) (*http.Response, error) {
 }
 
 func (c *Adaptor) SendRequest(message string) (string, error) {
-	content, _, err := c.SendRequestWithHistory(message, []Message{})
+	content, _, err := c.SendRequestWithHistory(message, []Message{}, nil)
 	return content, err
 }
 
-func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (string, *FunctionCall, error) {
+func (c *Adaptor) SendRequestWithHistory(message string, history []Message, tools []Tool) (string, *FunctionCall, error) {
 
 	messages := make([]Message, 0, len(history)+2)
 
@@ -172,8 +194,8 @@ func (c *Adaptor) SendRequestWithHistory(message string, history []Message) (str
 		Model:    c.model,
 		Messages: messages,
 	}
-	if len(c.tools) > 0 {
-		reqData.Tools = c.tools
+	if tools != nil {
+		reqData.Tools = tools
 	}
 
 	resp, err := c.sendWithRetry(reqData)
