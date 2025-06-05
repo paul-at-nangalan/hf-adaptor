@@ -4,6 +4,52 @@ This is still WIP, but hope it's useful to someone.
 
 # TGI type models
 
+### Creating Tools with `NewTool`
+
+The `hf` package provides a helper function `NewTool` to construct `Tool` objects. These objects define functions that the TGI model can be instructed to use, enabling function calling capabilities. The constructed `Tool` can then be passed to functions like `SendRequestWithHistory` or `SendSystemRequestWithHistory`.
+
+**Parameters:**
+
+- `name string`: The name of the function the model can call (e.g., "get_current_weather").
+- `description string`: A clear description of what the function does, which helps the model understand its purpose (e.g., "Get the current weather in a given location").
+- `params []hf.ToolParameter`: A slice of `hf.ToolParameter` structs, where each struct defines a parameter for the function. Each `ToolParameter` has the following fields:
+    - `Name string`: The name of the parameter (e.g., "location").
+    - `Type string`: The data type of the parameter (e.g., "string", "integer", "boolean"). This informs the model how to structure the arguments.
+    - `Description string`: A description of the parameter (e.g., "The city and state, e.g. San Francisco, CA").
+    - `Required bool`: A boolean indicating whether the model must provide this parameter when calling the function.
+
+**Return Value:**
+
+- `hf.Tool`: A `Tool` object, structured in the format expected by the OpenAI API for function calling.
+
+**Go Usage Example:**
+
+```go
+// Define parameters for a weather tool
+weatherParams := []hf.ToolParameter{
+    {
+        Name:        "location",
+        Type:        "string",
+        Description: "The city and state, e.g. San Francisco, CA",
+        Required:    true,
+    },
+    {
+        Name:        "unit",
+        Type:        "string",
+        Description: "The temperature unit, can be 'celsius' or 'fahrenheit'",
+        Required:    false,
+    },
+}
+
+// Create the tool
+weatherTool := hf.NewTool("get_current_weather", "Get the current weather in a given location", weatherParams)
+
+// This 'weatherTool' can now be included in the 'tools' slice passed to SendRequestWithHistory
+// For example:
+// tools := []hf.Tool{weatherTool}
+// answer, functionCalls, err := ad.SendRequestWithHistory("What's the weather in Boston?", history, tools)
+```
+
 ### `SendRequestWithHistory`
 
 Sends a user message to the TGI model, including the conversation history and optional tools. The 'user' role is assigned to the main message.
@@ -68,7 +114,7 @@ if err != nil {
 fmt.Println("System Response:", responseContent)
 ```
 
-## Example
+### Example
 
 This example demonstrates basic usage of `NewAdaptor` and `SendRequest` for TGI models.
 The `SendRequest` function is a simplified method for sending a single prompt without explicit history or tools.
