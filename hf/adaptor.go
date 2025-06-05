@@ -101,41 +101,25 @@ type FunctionCall struct {
 	} `json:"function"`
 }
 
-type ExtractResponse func(closer io.ReadCloser) (string, []FunctionCall, error)
-type Adaptor struct {
-	apiURL       string
-	apiKey       string
-	model        string
-	baseinstruct string
-	client       *http.Client
-	extractresp  ExtractResponse
-	maxretries   int
+type BaseAdaptor struct {
+	apiURL     string
+	apiKey     string
+	model      string
+	client     *http.Client
+	maxretries int
 }
 
-/*
-* extractresp can be nil, in which case the default extractor function (which simply extracts everything to a string)
-*  will be used
-* model should be the model type (which can be found somewhere on HF), e.g. tgi for text generation type models
- */
-func NewAdaptor(apiurl, apikey, model string, baseinstructions string,
-	extractresp ExtractResponse, maxretries int) *Adaptor {
-
-	ad := &Adaptor{
-		apiURL:       apiurl,
-		apiKey:       apikey,
-		client:       &http.Client{},
-		extractresp:  extractresp,
-		model:        model,
-		baseinstruct: baseinstructions,
-		maxretries:   maxretries,
+func NewBaseAdaptor(apiurl, apikey, model string, maxretries int) *BaseAdaptor {
+	return &BaseAdaptor{
+		apiURL:     apiurl,
+		apiKey:     apikey,
+		model:      model,
+		client:     &http.Client{},
+		maxretries: maxretries,
 	}
-	if extractresp == nil {
-		ad.extractresp = ad.RawExtracter
-	}
-	return ad
 }
 
-func (c *Adaptor) sendWithRetry(reqData any) (*http.Response, error) {
+func (c *BaseAdaptor) sendWithRetry(reqData any) (*http.Response, error) {
 	for i := 0; i < c.maxretries; i++ {
 		body := &bytes.Buffer{}
 		err := json.NewEncoder(body).Encode(reqData)
@@ -177,21 +161,59 @@ func (c *Adaptor) sendWithRetry(reqData any) (*http.Response, error) {
 	return nil, fmt.Errorf("Num retries exceeded")
 }
 
+// ////////////////////////////////////////////////////////////////
+//
+//	TGI with HUGS/OpenAI structured request response data
+//
+// ////////////////////////////////////////////////////////////////
+
+type Adaptor struct {
+	*BaseAdaptor
+	baseinstruct string
+	client       *http.Client
+	extractresp  ExtractResponse
+	maxretries   int
+}
+
+type ExtractResponse func(closer io.ReadCloser) (string, []FunctionCall, error)
+
+/*
+* extractresp can be nil, in which case the default extractor function (which simply extracts everything to a string)
+*  will be used
+* model should be the model type (which can be found somewhere on HF), e.g. tgi for text generation type models
+ */
+func NewAdaptor(apiurl, apikey, model string, baseinstructions string,
+	extractresp ExtractResponse, maxretries int) *Adaptor {
+
+	ad := &Adaptor{
+		BaseAdaptor:  NewBaseAdaptor(apiurl, apikey, model, maxretries),
+		client:       &http.Client{},
+		extractresp:  extractresp,
+		baseinstruct: baseinstructions,
+		maxretries:   maxretries,
+	}
+	if extractresp == nil {
+		ad.extractresp = RawExtracter
+	}
+	return ad
+}
+
 func (c *Adaptor) SendRequest(message string) (string, error) {
 	content, _, err := c.SendRequestWithHistory(message, []Message{}, nil)
 	return content, err
 }
 
-func (c *Adaptor) SendRequestWithHistory(message string, history []Message, tools []Tool) (string, []FunctionCall, error) {
+func (c *Adaptor) sendRequestWithHistory(message string, role Role, history []Message, tools []Tool) (string, []FunctionCall, error) {
 
 	messages := make([]Message, 0, len(history)+2)
 
+	//// The base message is instructions to the AI model
 	messages = append(messages, Message{
 		Role: string(ROLE_SYSTEM), Content: html.UnescapeString(c.baseinstruct),
 	})
 	messages = append(messages, history...)
 	messages = append(messages, Message{
-		Role: string(ROLE_USER), Content: html.UnescapeString(message),
+		Role: string(role), Content: html.UnescapeString(message),
 	})
 	reqData := AIRequest{
 		Model:    c.model,
@@ -210,6 +232,14 @@ func (c *Adaptor) SendRequestWithHistory(message string, history []Message, tool
 
 	content, functionCall, err := c.extractresp(resp.Body)
 	return content, functionCall, err
+}
+
+func (c *Adaptor) SendRequestWithHistory(message string, history []Message, tools []Tool) (string, []FunctionCall, error) {
+	return c.sendRequestWithHistory(message, ROLE_USER, history, tools)
+}
+
+func (c *Adaptor) SendSystemRequestWithHistory(message string, history []Message, tools []Tool) (string, []FunctionCall, error) {
+	return c.sendRequestWithHistory(message, ROLE_SYSTEM, history, tools)
 }
 
 type Response struct {
@@ -249,11 +279,17 @@ func (d *DebugDecoder) Close() error {
 	return d.reader.Close()
 }
 
-// // Extract the content field from the first message _only_
-func OpenAIJsonExtractor(reader io.ReadCloser) (string, []FunctionCall, error) {
+func OpenAIJsonExtractorWithDebug(reader io.ReadCloser) (string, []FunctionCall, error) {
 	dbgdec := &DebugDecoder{reader: reader}
 
-	dec := json.NewDecoder(dbgdec)
+	return OpenAIJsonExtractor(dbgdec)
+}
+
+// // Extract the content field from the first message _only_
+func OpenAIJsonExtractor(reader io.ReadCloser) (string, []FunctionCall, error) {
+	dec := json.NewDecoder(reader)
+	defer reader.Close()
+
 	resp := Response{} // Ensure your Response struct is defined to expect FunctionCall within Message
 	err := dec.Decode(&resp)
 	if err != nil {
@@ -271,7 +307,7 @@ func OpenAIJsonExtractor(reader io.ReadCloser) (string, []FunctionCall, error) {
 	return "", nil, fmt.Errorf("no choices found in response") // Or handle as appropriate
 }
 
-func (c *Adaptor) RawExtracter(reader io.ReadCloser) (string, []FunctionCall, error) {
+func RawExtracter(reader io.ReadCloser) (string, []FunctionCall, error) {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return "", nil, err
@@ -279,4 +315,79 @@ func (c *Adaptor) RawExtracter(reader io.ReadCloser) (string, []FunctionCall, er
 	fmt.Println("Resp: ", string(data))
 	// RawExtracter does not parse function calls, so it returns nil for FunctionCall
 	return string(data), nil, nil
+}
+
+// ///////////////////////////////////////////////////////////////////////
+//
+//	Question and Answer type models
+//
+// ///////////////////////////////////////////////////////////////////////
+
+type QnAExtractor func(closer io.ReadCloser) ([]QnAResponse, error)
+
+type QnAAdaptor struct {
+	*BaseAdaptor
+
+	extractor QnAExtractor
+}
+
+func NewQnAAdaptor(apiurl, apikey, model string,
+	extractresp QnAExtractor, maxretries int) *QnAAdaptor {
+
+	ad := &QnAAdaptor{
+		BaseAdaptor: NewBaseAdaptor(apiurl, apikey, model, maxretries),
+		extractor:   extractresp,
+	}
+	if extractresp == nil {
+		ad.extractor = QnAJsonResponseExtractor
+	}
+	return ad
+}
+
+type QnAInputs struct {
+	Context  string `json:"context"`  /// e.g. "My name is Clara and I live in Berkeley.",
+	Question string `json:"question"` /// "What is my name?",
+}
+type QnARequest struct {
+	Inputs     QnAInputs      `json:"inputs"`               /// "What is my name?",
+	Parameters map[string]any `json:"parameters,omitempty"` //// See the model playground API in HF for these
+}
+
+func (c *QnAAdaptor) SendQuestion(context, question string, params map[string]any) ([]QnAResponse, error) {
+	req := QnARequest{
+		Inputs: QnAInputs{
+			Context:  context,
+			Question: question,
+		},
+		Parameters: params,
+	}
+	resp, err := c.sendWithRetry(req)
+	handlers.PanicOnError(err)
+	return c.extractor(resp.Body)
+}
+
+type QnAResponse struct {
+	Answer string  `json:"answer"` //	string	The answer to the question.
+	Score  float32 `json:"score"`  // number	The probability associated to the answer.
+	Start  int     `json:"start"`  // The character position in the input where the answer begins.
+	End    int     `json:"end"`    // The character position in the input where the answer ends
+}
+
+func QnAJsonResponseExtractorWithDebug(reader io.ReadCloser) ([]QnAResponse, error) {
+	dbgreader := &DebugDecoder{reader: reader}
+	return QnAJsonResponseExtractor(dbgreader)
+}
+
+func QnAJsonResponseExtractor(reader io.ReadCloser) ([]QnAResponse, error) {
+
+	//// Response should be an array
+	responses := make([]QnAResponse, 0)
+	dec := json.NewDecoder(reader)
+	defer reader.Close()
+
+	err := dec.Decode(&responses)
+	if err != nil {
+		return nil, err
+	}
+	return responses, nil
 }

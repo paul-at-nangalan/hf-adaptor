@@ -2,7 +2,10 @@
 Basic Golang adaptor to run LLM models on HuggingFace using OpenAI API standard
 This is still WIP, but hope it's useful to someone.
 
-# Example
+# TGI type models
+##
+
+## Example
 ```
 var baseinstruct = `You are a ............`
 
