@@ -1,5 +1,5 @@
 # hf-adaptor
-A Golang adaptor for interacting with HuggingFace LLM models using an OpenAI API compatible interface.
+A Golang adaptor for interacting with HuggingFace LLM models using the HUGS API compatible interface.
 This is still WIP, but hope it's useful to someone.
 
 # TGI type models
