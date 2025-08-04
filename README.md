@@ -4,6 +4,8 @@ This is still WIP, but hope it's useful to someone.
 
 # TGI type models
 
+## Text generation
+
 ### Creating Tools with `NewTool`
 
 The `hf` package provides a helper function `NewTool` to construct `Tool` objects. These objects define functions that the TGI model can be instructed to use, enabling function calling capabilities. The constructed `Tool` can then be passed to functions like `SendRequestWithHistory` or `SendSystemRequestWithHistory`.
@@ -142,6 +144,7 @@ func main() {
     fmt.Println("Answer:", answer)
 }
 ```
+
 
 ## QnA type models
 
